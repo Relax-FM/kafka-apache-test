@@ -3,15 +3,57 @@ package main
 import (
 	"fmt"
 	"log"
-	"os"
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 )
 
+type OrderPlacer struct {
+	producer *kafka.Producer
+	topic    string
+    deliveryCh chan kafka.Event
+}
+
+func NewOrderPlacer(p *kafka.Producer, topic string) *OrderPlacer {
+	return &OrderPlacer{
+		producer: p,
+		topic:    topic,
+        deliveryCh: make(chan kafka.Event, 10000),
+	}
+}
+
+func (op *OrderPlacer) placeOrder(orderType string, size int) error { 
+    // FIXME: Возможно size должен быть не интом а float64
+
+    var (
+        format  = fmt.Sprintf("%s - %d", orderType, size)
+        payload = []byte(format)
+    )
+    
+    err := op.producer.Produce(&kafka.Message{
+            TopicPartition: kafka.TopicPartition{
+                Topic: &op.topic, 
+                Partition: kafka.PartitionAny,
+            },
+            Value:          payload,
+        },
+            op.deliveryCh,
+        )
+        if err != nil {
+            log.Fatal(err)
+            return err
+        }
+        <-op.deliveryCh
+
+        return nil
+}
+
 func main() {
+    ///////////////////////////////////////////////////////
+    // Producer
+    ///////////////////////////////////////////////////////
+
     topic := "HVSE"
-    // FIXME: убрать ошибки
 	p, err := kafka.NewProducer(&kafka.ConfigMap{
 		"bootstrap.servers": "localhost:9092",
 		"client.id":         "myProducer",
@@ -21,54 +63,11 @@ func main() {
 		fmt.Printf("Failed to create producer: %s\n", err)
 	}
 
-    ///////////////////////////////////////////////////////
-
-    go func(){
-        consumer, err := kafka.NewConsumer(&kafka.ConfigMap{
-        "bootstrap.servers":    "localhost:9092",
-        "group.id":             "foo",
-        "auto.offset.reset":    "smallest"},
-        )
-        if err != nil {
+    op := NewOrderPlacer(p, topic)
+    for i := 0; i < 1000; i++ {
+        if err := op.placeOrder("market order", i + 1); err != nil {
             log.Fatal(err)
         }
-
-        err = consumer.Subscribe(topic, nil)
-        if err != nil {
-            log.Fatal(err)
-        }
-
-        for {
-            ev := consumer.Poll(100)
-            switch e := ev.(type) {
-            case *kafka.Message:
-                fmt.Printf("consumed message from the que: %s\n", string(e.Value))
-            case kafka.Error:
-                fmt.Fprintf(os.Stderr, "%% Error: %v\n", e)
-        }
+        time.Sleep(3 * time.Second)
     }
-    }()
-
-    ///////////////////////////////////////////////////////
-
-    deliverch := make(chan kafka.Event, 10000)
-
-    for {
-        err = p.Produce(&kafka.Message{
-            TopicPartition: kafka.TopicPartition{Topic: &topic, Partition: kafka.PartitionAny},
-            Value: []byte("FULL"),
-        },
-            deliverch,
-        )
-        if err != nil {
-            log.Fatal(err)
-        }
-        <-deliverch
-
-        time.Sleep(time.Second * 3)
-    }
-
-    // fmt.Println(e)
-    ///////////////////////////////////////////////////////
-
 }
